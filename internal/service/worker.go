@@ -51,6 +51,9 @@ func (w *DeliveryWorker) Run(ctx context.Context) {
 }
 
 func (w *DeliveryWorker) ProcessOnce(ctx context.Context) error {
+	if _, err := w.service.ExpireDueOrders(ctx); err != nil {
+		return err
+	}
 	delivery, err := w.service.store.ClaimDelivery(ctx, time.Now())
 	if err != nil || delivery == nil {
 		return err

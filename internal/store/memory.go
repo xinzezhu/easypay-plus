@@ -151,6 +151,21 @@ func (s *Memory) FailOrder(_ context.Context, id string) error {
 	return nil
 }
 
+func (s *Memory) ExpireDueOrders(_ context.Context, now time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var expired int64
+	for id, order := range s.orders {
+		if order.Status != "pending" || order.ExpiresAt == nil || order.ExpiresAt.After(now) {
+			continue
+		}
+		order.Status, order.UpdatedAt = "expired", now
+		s.orders[id] = order
+		expired++
+	}
+	return expired, nil
+}
+
 func (s *Memory) ConfirmPayment(_ context.Context, c PaymentConfirmation) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

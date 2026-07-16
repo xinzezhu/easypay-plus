@@ -160,6 +160,16 @@ func (s *MySQL) FailOrder(ctx context.Context, id string) error {
 	return err
 }
 
+func (s *MySQL) ExpireDueOrders(ctx context.Context, now time.Time) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE payment_orders SET status = 'expired', updated_at = ?
+		WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at <= ?`, now, now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *MySQL) ConfirmPayment(ctx context.Context, confirmation PaymentConfirmation) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

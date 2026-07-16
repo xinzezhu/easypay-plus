@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <meta name="app-base" content="__BASE_PATH__">
   <title>EasyPay Plus</title>
-  <link rel="stylesheet" href="__BASE_PATH__/styles.css">
+  <link rel="stylesheet" href="__BASE_PATH__/styles.css?v=__ASSET_VERSION__">
 </head>
 <body>
   <div id="admin-app" class="app-shell" hidden>
@@ -127,6 +127,33 @@
     </main>
   </section>
 
+  <section id="checkout-screen" class="checkout-screen" hidden>
+    <header class="checkout-header">
+      <div class="brand"><div class="brand-mark">EP</div><div><strong>EasyPay Plus</strong><span>安全支付</span></div></div>
+      <span class="mode-badge checkout-badge"><i data-lucide="shield-check"></i><span>订单支付</span></span>
+    </header>
+    <main class="checkout">
+      <div class="checkout-panel">
+        <div id="checkout-status" class="checkout-status"><span class="state-dot"></span><span id="checkout-status-label">正在加载订单</span></div>
+        <p class="eyebrow">应付金额</p>
+        <div id="checkout-amount" class="checkout-amount">¥0.00</div>
+        <div class="checkout-details">
+          <div><span>商品</span><strong id="checkout-goods">-</strong></div>
+          <div><span>产品</span><strong id="checkout-product">-</strong></div>
+          <div><span>产品订单号</span><strong id="checkout-order-no">-</strong></div>
+          <div><span>支付方式</span><strong id="checkout-pay-type">-</strong></div>
+        </div>
+        <div id="checkout-qr-section" class="checkout-qr-section" hidden>
+          <img id="checkout-qr-image" class="checkout-qr-image" alt="支付二维码">
+          <p id="checkout-qr-hint" class="checkout-qr-hint">请使用对应支付应用扫码完成支付</p>
+        </div>
+        <div class="checkout-countdown"><i data-lucide="timer"></i><span>剩余支付时间</span><strong id="checkout-countdown">--:--</strong></div>
+        <p id="checkout-message" class="checkout-message" aria-live="polite"></p>
+        <button id="checkout-return-button" class="secondary-button full-button" type="button" hidden><i data-lucide="arrow-left"></i><span>返回业务页面</span></button>
+      </div>
+    </main>
+  </section>
+
   <dialog id="product-dialog" class="dialog">
     <form id="product-form" method="dialog">
       <div class="dialog-header"><div><p class="eyebrow">新接入</p><h2>添加产品</h2></div><button class="icon-button close-dialog" type="button" title="关闭"><i data-lucide="x"></i></button></div>
@@ -150,6 +177,6 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" integrity="sha384-uTYyvsSSUZeaPhb5RbKlQa0zY/WpX/QHfvg2mczXyBQOpkWPEDy9lczyp+w7SKXu" crossorigin="anonymous"></script>
-  <script src="__BASE_PATH__/app.js" defer></script>
+  <script src="__BASE_PATH__/app.js?v=__ASSET_VERSION__" defer></script>
 </body>
 </html>

@@ -40,6 +40,7 @@ type Store interface {
 	GetOrderByProductNo(context.Context, string, string) (model.Order, error)
 	FinalizeOrder(context.Context, model.Order) error
 	FailOrder(context.Context, string) error
+	ExpireDueOrders(context.Context, time.Time) (int64, error)
 	ConfirmPayment(context.Context, PaymentConfirmation) (bool, error)
 	ListOrders(context.Context, string, string, int) ([]model.Order, error)
 	Stats(context.Context) (model.Stats, error)

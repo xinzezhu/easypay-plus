@@ -79,6 +79,10 @@ func New(storage store.Store, gateway Gateway, vault *secure.Vault, cfg config.C
 
 func (s *Service) Store() store.Store { return s.store }
 
+func (s *Service) ExpireDueOrders(ctx context.Context) (int64, error) {
+	return s.store.ExpireDueOrders(ctx, s.now())
+}
+
 func (s *Service) CreateProduct(ctx context.Context, name, code, notifyURL, returnURL string) (ProductCredentials, error) {
 	name, code = strings.TrimSpace(name), strings.TrimSpace(code)
 	if name == "" || utf8.RuneCountInString(name) > 100 {
@@ -208,11 +212,12 @@ func (s *Service) CreateOrder(ctx context.Context, product model.Product, input 
 		}
 		return OrderResult{}, err
 	}
+	publicBaseURL := s.config.PublicBaseURL + s.config.BasePath
 	response, err := s.gateway.CreateOrder(ctx, epay.CreateRequest{
 		PayID: payID, Param: orderID, PayType: input.PayType, Price: money.Format(amountCents), GoodsName: input.GoodsName,
-		NotifyURL:  s.config.PublicBaseURL + "/api/epay/notify",
-		ReturnURL:  s.config.PublicBaseURL + "/payment/return",
-		TimeoutURL: s.config.PublicBaseURL + "/payment/timeout",
+		NotifyURL:  publicBaseURL + "/api/epay/notify",
+		ReturnURL:  publicBaseURL + "/payment/return",
+		TimeoutURL: publicBaseURL + "/payment/timeout",
 	})
 	if err != nil {
 		_ = s.store.FailOrder(ctx, order.ID)
@@ -228,9 +233,10 @@ func (s *Service) CreateOrder(ctx context.Context, product model.Product, input 
 		_ = s.store.FailOrder(ctx, order.ID)
 		return OrderResult{}, fmt.Errorf("易支付返回了无效的实付金额: %w", err)
 	}
-	expires := now.Add(time.Duration(response.Timeout) * time.Minute)
+	finalizedAt := s.now()
+	expires := finalizedAt.Add(time.Duration(response.Timeout) * time.Minute)
 	order.EpayOrderID, order.ReallyAmountCents, order.Status = response.OrderID, &reallyCents, "pending"
-	order.PayURL, order.ExpiresAt, order.UpdatedAt = response.PayURL, &expires, s.now()
+	order.PayURL, order.ExpiresAt, order.UpdatedAt = response.PayURL, &expires, finalizedAt
 	if err := s.store.FinalizeOrder(ctx, order); err != nil {
 		return OrderResult{}, err
 	}
@@ -256,6 +262,9 @@ func (s *Service) ProcessCallback(ctx context.Context, values url.Values) (strin
 	reallyCents, err := money.Parse(values.Get("reallyPrice"))
 	if err != nil {
 		return "", false, errors.New("回调实付金额无效")
+	}
+	if _, err := s.ExpireDueOrders(ctx); err != nil {
+		return "", false, err
 	}
 	order, err := s.store.GetOrder(ctx, values.Get("param"))
 	if err != nil {

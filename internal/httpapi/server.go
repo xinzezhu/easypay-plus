@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -21,13 +23,15 @@ import (
 	"github.com/easypay-plus/easypay-plus/internal/service"
 	"github.com/easypay-plus/easypay-plus/internal/store"
 	webassets "github.com/easypay-plus/easypay-plus/web"
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 type Server struct {
-	service *service.Service
-	config  config.Config
-	logger  *slog.Logger
-	handler http.Handler
+	service      *service.Service
+	config       config.Config
+	logger       *slog.Logger
+	handler      http.Handler
+	assetVersion string
 }
 
 type orderResponse struct {
@@ -52,8 +56,21 @@ type orderResponse struct {
 	DeliveryLastError string     `json:"deliveryLastError,omitempty"`
 }
 
+type checkoutOrderResponse struct {
+	ID             string     `json:"id"`
+	ProductName    string     `json:"productName"`
+	ProductOrderNo string     `json:"productOrderNo"`
+	PayType        int        `json:"payType"`
+	GoodsName      string     `json:"goodsName"`
+	Amount         string     `json:"amount"`
+	ReallyAmount   string     `json:"reallyAmount,omitempty"`
+	Status         string     `json:"status"`
+	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
+	HasReturnURL   bool       `json:"hasReturnUrl"`
+}
+
 func New(service *service.Service, cfg config.Config, logger *slog.Logger) *Server {
-	s := &Server{service: service, config: cfg, logger: logger}
+	s := &Server{service: service, config: cfg, logger: logger, assetVersion: webAssetVersion()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.Handle("GET /api/admin/overview", s.admin(http.HandlerFunc(s.handleOverview)))
@@ -64,10 +81,14 @@ func New(service *service.Service, cfg config.Config, logger *slog.Logger) *Serv
 	mux.Handle("POST /api/admin/deliveries/{id}/retry", s.admin(http.HandlerFunc(s.handleRetryDelivery)))
 	mux.HandleFunc("POST /api/v1/orders", s.handleCreateOrder)
 	mux.HandleFunc("GET /api/v1/orders/{orderNo}", s.handleGetProductOrder)
+	mux.HandleFunc("GET /api/pay/orders/{id}", s.handleCheckoutOrder)
 	mux.HandleFunc("GET /api/epay/notify", s.handleEpayNotify)
 	mux.HandleFunc("POST /api/epay/notify", s.handleEpayNotify)
 	mux.HandleFunc("GET /payment/return", s.handlePaymentReturn)
 	mux.HandleFunc("GET /payment/timeout", s.handlePaymentTimeout)
+	mux.HandleFunc("GET /pay/{id}/qrcode.png", s.handleCheckoutQRCode)
+	mux.HandleFunc("GET /pay/{id}/return", s.handleCheckoutReturn)
+	mux.HandleFunc("GET /pay/{id}", s.handleCheckoutPage)
 	mux.HandleFunc("GET /api/mock/orders/{id}", s.handleMockOrder)
 	mux.HandleFunc("POST /api/mock/orders/{id}/pay", s.handleMockPay)
 	mux.HandleFunc("GET /", s.handleSPA)
@@ -161,7 +182,7 @@ func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]orderResponse, 0, len(orders))
 	for _, order := range orders {
-		items = append(items, presentOrder(order))
+		items = append(items, s.presentOrder(order))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -205,13 +226,17 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	if result.Idempotent {
 		status = http.StatusOK
 	}
-	writeJSON(w, status, map[string]any{"order": presentOrder(result.Order), "idempotent": result.Idempotent})
+	writeJSON(w, status, map[string]any{"order": s.presentOrder(result.Order), "idempotent": result.Idempotent})
 }
 
 func (s *Server) handleGetProductOrder(w http.ResponseWriter, r *http.Request) {
 	product, err := s.authenticateProduct(r, "")
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", err.Error())
+		return
+	}
+	if _, err := s.service.ExpireDueOrders(r.Context()); err != nil {
+		s.internalError(w, err)
 		return
 	}
 	order, err := s.service.Store().GetOrderByProductNo(r.Context(), product.ID, r.PathValue("orderNo"))
@@ -223,7 +248,108 @@ func (s *Server) handleGetProductOrder(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"order": presentOrder(order)})
+	writeJSON(w, http.StatusOK, map[string]any{"order": s.presentOrder(order)})
+}
+
+func (s *Server) handleCheckoutOrder(w http.ResponseWriter, r *http.Request) {
+	order, err := s.loadCheckoutOrder(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "订单不存在")
+		return
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	product, err := s.service.Store().GetProduct(r.Context(), order.ProductID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "产品不存在")
+		return
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"order": presentCheckoutOrder(order, product.ReturnURL != "")})
+}
+
+func (s *Server) handleCheckoutQRCode(w http.ResponseWriter, r *http.Request) {
+	order, err := s.loadCheckoutOrder(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if order.Status != "pending" || order.PayURL == "" {
+		http.Error(w, "订单已过期或不可支付", http.StatusGone)
+		return
+	}
+	png, err := qrcode.Encode(paymentQRCodePayload(order.PayURL), qrcode.Medium, 360)
+	if err != nil {
+		s.logger.Error("generate payment qrcode failed", "order", order.ID, "error", err)
+		http.Error(w, "二维码生成失败", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(png)
+}
+
+func (s *Server) handleCheckoutReturn(w http.ResponseWriter, r *http.Request) {
+	order, err := s.loadCheckoutOrder(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	product, err := s.service.Store().GetProduct(r.Context(), order.ProductID)
+	if err != nil || product.ReturnURL == "" {
+		http.Redirect(w, r, s.checkoutURL(order.ID), http.StatusFound)
+		return
+	}
+	target, err := url.Parse(product.ReturnURL)
+	if err != nil {
+		http.Redirect(w, r, s.checkoutURL(order.ID), http.StatusFound)
+		return
+	}
+	query := target.Query()
+	query.Set("relayOrderId", order.ID)
+	query.Set("productOrderNo", order.ProductOrderNo)
+	query.Set("status", order.Status)
+	target.RawQuery = query.Encode()
+	http.Redirect(w, r, target.String(), http.StatusFound)
+}
+
+func (s *Server) handleCheckoutPage(w http.ResponseWriter, r *http.Request) {
+	s.serveIndex(w)
+}
+
+func (s *Server) loadCheckoutOrder(ctx context.Context, orderID string) (model.Order, error) {
+	if _, err := s.service.ExpireDueOrders(ctx); err != nil {
+		return model.Order{}, err
+	}
+	return s.service.Store().GetOrder(ctx, orderID)
+}
+
+// paymentQRCodePayload converts EasyPay's image-generator URL into the actual
+// payment payload. Some EasyPay channels return a direct QR payload, while
+// others return /api/enQrcode?url=<payload>, which is only a PNG image URL.
+func paymentQRCodePayload(payURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(payURL))
+	if err != nil || !strings.EqualFold(strings.TrimRight(parsed.Path, "/"), "/api/enQrcode") {
+		return payURL
+	}
+	if payload := strings.TrimSpace(parsed.Query().Get("url")); payload != "" {
+		return payload
+	}
+	return payURL
 }
 
 func (s *Server) handleEpayNotify(w http.ResponseWriter, r *http.Request) {
@@ -301,7 +427,7 @@ func (s *Server) handleMockOrder(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"order": presentOrder(order)})
+	writeJSON(w, http.StatusOK, map[string]any{"order": s.presentOrder(order)})
 }
 
 func (s *Server) handleMockPay(w http.ResponseWriter, r *http.Request) {
@@ -314,7 +440,7 @@ func (s *Server) handleMockPay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	order, _ := s.service.Store().GetOrder(r.Context(), r.PathValue("id"))
-	writeJSON(w, http.StatusOK, map[string]any{"order": presentOrder(order)})
+	writeJSON(w, http.StatusOK, map[string]any{"order": s.presentOrder(order)})
 }
 
 func (s *Server) authenticateProduct(r *http.Request, rawBody string) (model.Product, error) {
@@ -336,31 +462,47 @@ func (s *Server) admin(next http.Handler) http.Handler {
 func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	if path == "" || strings.HasPrefix(path, "mock-pay/") {
-		path = "index.html"
+		s.serveIndex(w)
+		return
 	}
 	content, err := webassets.Assets.ReadFile(path)
 	if err != nil {
-		content, err = webassets.Assets.ReadFile("index.html")
-		if err != nil {
-			http.Error(w, "frontend unavailable", http.StatusInternalServerError)
-			return
-		}
-		path = "index.html"
-	}
-	if path == "index.html" {
-		content = []byte(strings.ReplaceAll(string(content), "__BASE_PATH__", s.config.BasePath))
+		s.serveIndex(w)
+		return
 	}
 	contentType := mime.TypeByExtension(filepath.Ext(path))
 	if contentType != "" {
 		w.Header().Set("Content-Type", contentType)
 	}
-	if path == "index.html" {
-		w.Header().Set("Cache-Control", "no-store")
-	} else {
-		w.Header().Set("Cache-Control", "public, max-age=3600")
-	}
+	w.Header().Set("Cache-Control", "public, max-age=3600")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(content)
+}
+
+func (s *Server) serveIndex(w http.ResponseWriter) {
+	content, err := webassets.Assets.ReadFile("index.html")
+	if err != nil {
+		http.Error(w, "frontend unavailable", http.StatusInternalServerError)
+		return
+	}
+	content = []byte(strings.ReplaceAll(string(content), "__BASE_PATH__", s.config.BasePath))
+	content = []byte(strings.ReplaceAll(string(content), "__ASSET_VERSION__", s.assetVersion))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(content)
+}
+
+func webAssetVersion() string {
+	hash := sha256.New()
+	for _, name := range []string{"app.js", "styles.css"} {
+		content, err := webassets.Assets.ReadFile(name)
+		if err != nil {
+			return "current"
+		}
+		_, _ = hash.Write(content)
+	}
+	return hex.EncodeToString(hash.Sum(nil))[:16]
 }
 
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
@@ -388,18 +530,37 @@ func (s *Server) internalError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusInternalServerError, "internal_error", "服务暂时不可用")
 }
 
-func presentOrder(order model.Order) orderResponse {
+func (s *Server) presentOrder(order model.Order) orderResponse {
 	response := orderResponse{
 		ID: order.ID, ProductID: order.ProductID, ProductName: order.ProductName, ProductOrderNo: order.ProductOrderNo,
 		PayID: order.PayID, EpayOrderID: order.EpayOrderID, PayType: order.PayType, GoodsName: order.GoodsName,
-		Amount: money.Format(order.AmountCents), Status: order.Status, PayURL: order.PayURL, ExpiresAt: order.ExpiresAt,
+		Amount: money.Format(order.AmountCents), Status: order.Status, ExpiresAt: order.ExpiresAt,
 		PaidAt: order.PaidAt, CreatedAt: order.CreatedAt, DeliveryID: order.DeliveryID,
 		DeliveryStatus: order.DeliveryStatus, DeliveryAttempts: order.DeliveryAttempts, DeliveryLastError: order.DeliveryLastError,
+	}
+	if order.Status == "pending" && order.PayURL != "" {
+		response.PayURL = s.checkoutURL(order.ID)
 	}
 	if order.ReallyAmountCents != nil {
 		response.ReallyAmount = money.Format(*order.ReallyAmountCents)
 	}
 	return response
+}
+
+func presentCheckoutOrder(order model.Order, hasReturnURL bool) checkoutOrderResponse {
+	response := checkoutOrderResponse{
+		ID: order.ID, ProductName: order.ProductName, ProductOrderNo: order.ProductOrderNo,
+		PayType: order.PayType, GoodsName: order.GoodsName, Amount: money.Format(order.AmountCents),
+		Status: order.Status, ExpiresAt: order.ExpiresAt, HasReturnURL: hasReturnURL,
+	}
+	if order.ReallyAmountCents != nil {
+		response.ReallyAmount = money.Format(*order.ReallyAmountCents)
+	}
+	return response
+}
+
+func (s *Server) checkoutURL(orderID string) string {
+	return s.config.PublicBaseURL + s.config.BasePath + "/pay/" + url.PathEscape(orderID)
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, target any) error {

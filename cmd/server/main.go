@@ -45,7 +45,7 @@ func main() {
 	vault := secure.NewVault(cfg.MasterKey)
 	gateway := epay.New(epay.Config{
 		BaseURL: cfg.EpayBaseURL, MerchantID: cfg.EpayMerchantID, Secret: cfg.EpaySecret,
-		Mock: cfg.EpayMock, PublicBaseURL: cfg.PublicBaseURL, CallbackSignMode: cfg.EpayCallbackSignMode,
+		Mock: cfg.EpayMock, PublicBaseURL: cfg.PublicBaseURL + cfg.BasePath, CallbackSignMode: cfg.EpayCallbackSignMode,
 	})
 	appService := service.New(storage, gateway, vault, cfg)
 	worker := service.NewDeliveryWorker(appService, logger)

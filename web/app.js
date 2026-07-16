@@ -3,6 +3,11 @@ const state = {
   products: [],
   orders: [],
   view: "products",
+  checkoutOrder: null,
+  checkoutPoll: null,
+  checkoutTimer: null,
+  checkoutExpiryRequested: false,
+  checkoutRedirectScheduled: false,
 };
 const BASE_PATH = document.querySelector('meta[name="app-base"]')?.content || "";
 
@@ -12,8 +17,13 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 document.addEventListener("DOMContentLoaded", () => {
   bindCommonActions();
   refreshIcons();
-  if (location.pathname.startsWith(`${BASE_PATH}/mock-pay/`)) {
+  if (paymentOrderID("mock-pay")) {
     initMockCheckout();
+    return;
+  }
+  const checkoutOrderID = paymentOrderID("pay");
+  if (checkoutOrderID) {
+    initCheckout(checkoutOrderID);
     return;
   }
   if (state.token) {
@@ -61,6 +71,7 @@ function logout() {
 function showLogin() {
   $("#admin-app").hidden = true;
   $("#mock-screen").hidden = true;
+  $("#checkout-screen").hidden = true;
   $("#login-screen").hidden = false;
   setTimeout(() => $("#admin-token").focus(), 0);
 }
@@ -68,6 +79,7 @@ function showLogin() {
 async function openAdmin() {
   $("#login-screen").hidden = true;
   $("#mock-screen").hidden = true;
+  $("#checkout-screen").hidden = true;
   $("#admin-app").hidden = false;
   await loadAll();
 }
@@ -224,6 +236,7 @@ function setView(view) {
 async function initMockCheckout() {
   $("#admin-app").hidden = true;
   $("#login-screen").hidden = true;
+  $("#checkout-screen").hidden = true;
   $("#mock-screen").hidden = false;
   const id = location.pathname.split("/").filter(Boolean).pop();
   try {
@@ -254,6 +267,129 @@ function renderMockOrder(order) {
   $(".checkout-status").classList.toggle("is-paid", paid);
   $("#mock-pay-button").disabled = paid;
   $("#mock-pay-button span").textContent = paid ? "订单已支付" : "确认模拟支付";
+}
+
+function paymentOrderID(segment) {
+  const prefix = `${BASE_PATH}/${segment}/`;
+  if (!location.pathname.startsWith(prefix)) return "";
+  const orderID = location.pathname.slice(prefix.length).split("/")[0];
+  return orderID ? decodeURIComponent(orderID) : "";
+}
+
+async function initCheckout(orderID) {
+  $("#admin-app").hidden = true;
+  $("#login-screen").hidden = true;
+  $("#mock-screen").hidden = true;
+  $("#checkout-screen").hidden = false;
+  $("#checkout-return-button").addEventListener("click", () => {
+    const target = $("#checkout-return-button").dataset.target;
+    if (target) location.assign(target);
+  });
+  try {
+    await loadCheckoutOrder(orderID);
+    state.checkoutTimer = window.setInterval(updateCheckoutCountdown, 1000);
+    state.checkoutPoll = window.setInterval(() => loadCheckoutOrder(orderID), 5000);
+  } catch (error) {
+    renderCheckoutError(error.message);
+  }
+}
+
+async function loadCheckoutOrder(orderID) {
+  const data = await publicAPI(`/api/pay/orders/${encodeURIComponent(orderID)}`);
+  state.checkoutOrder = data.order;
+  state.checkoutExpiryRequested = false;
+  if (data.order.status !== "paid") state.checkoutRedirectScheduled = false;
+  renderCheckout(data.order);
+  if (!["pending", "creating"].includes(data.order.status)) stopCheckoutPolling();
+}
+
+function renderCheckout(order) {
+  const localExpired = order.status === "pending" && order.expiresAt && new Date(order.expiresAt).getTime() <= Date.now();
+  const displayStatus = localExpired ? "expired" : order.status;
+  const statusLabel = {
+    creating: "订单正在创建",
+    pending: "等待支付",
+    paid: "支付成功",
+    expired: "订单已超时取消",
+    failed: "订单创建失败",
+  }[displayStatus] || "订单状态异常";
+  const statusBox = $("#checkout-status");
+  statusBox.classList.toggle("is-paid", displayStatus === "paid");
+  statusBox.classList.toggle("is-expired", ["expired", "failed"].includes(displayStatus));
+  $("#checkout-status-label").textContent = statusLabel;
+  $("#checkout-amount").textContent = `¥${order.reallyAmount || order.amount}`;
+  $("#checkout-goods").textContent = order.goodsName || "-";
+  $("#checkout-product").textContent = order.productName || "-";
+  $("#checkout-order-no").textContent = order.productOrderNo || "-";
+  $("#checkout-pay-type").textContent = order.payType === 1 ? "微信支付" : "支付宝支付";
+
+  const pending = displayStatus === "pending";
+  $("#checkout-qr-section").hidden = !pending;
+  if (pending) {
+    const image = $("#checkout-qr-image");
+    if (image.dataset.orderID !== order.id) {
+      image.dataset.orderID = order.id;
+      image.src = `${BASE_PATH}/pay/${encodeURIComponent(order.id)}/qrcode.png`;
+    }
+    $("#checkout-qr-hint").textContent = order.payType === 1 ? "请使用微信扫码完成支付" : "请使用支付宝扫码完成支付";
+  } else {
+    $("#checkout-qr-image").removeAttribute("src");
+  }
+
+  $("#checkout-message").textContent = displayStatus === "paid"
+    ? "支付结果已确认，请返回业务页面继续。"
+    : displayStatus === "expired"
+      ? "二维码已失效，请返回业务页面重新创建订单。"
+      : displayStatus === "failed"
+        ? "该订单无法支付，请返回业务页面重新创建订单。"
+        : "";
+  const returnButton = $("#checkout-return-button");
+  returnButton.hidden = !order.hasReturnUrl || !["paid", "expired", "failed"].includes(displayStatus);
+  returnButton.dataset.target = `${BASE_PATH}/pay/${encodeURIComponent(order.id)}/return`;
+  if (displayStatus === "paid" && order.hasReturnUrl) scheduleCheckoutReturn(returnButton.dataset.target);
+  updateCheckoutCountdown();
+}
+
+function scheduleCheckoutReturn(target) {
+  if (state.checkoutRedirectScheduled || !target) return;
+  state.checkoutRedirectScheduled = true;
+  $("#checkout-message").textContent = "支付结果已确认，正在返回业务页面。";
+  window.setTimeout(() => location.replace(target), 1000);
+}
+
+function updateCheckoutCountdown() {
+  const order = state.checkoutOrder;
+  if (!order?.expiresAt) return;
+  const remaining = Math.max(0, Math.ceil((new Date(order.expiresAt).getTime() - Date.now()) / 1000));
+  const minutes = String(Math.floor(remaining / 60)).padStart(2, "0");
+  const seconds = String(remaining % 60).padStart(2, "0");
+  $("#checkout-countdown").textContent = `${minutes}:${seconds}`;
+  if (remaining === 0 && order.status === "pending") {
+    $("#checkout-qr-section").hidden = true;
+    $("#checkout-status").classList.add("is-expired");
+    $("#checkout-status-label").textContent = "订单已超时取消";
+    $("#checkout-message").textContent = "二维码已失效，请返回业务页面重新创建订单。";
+    if (!state.checkoutExpiryRequested) {
+      state.checkoutExpiryRequested = true;
+      window.setTimeout(() => loadCheckoutOrder(order.id).catch((error) => renderCheckoutError(error.message)), 0);
+    }
+  }
+}
+
+function renderCheckoutError(message) {
+  $("#checkout-status").classList.add("is-expired");
+  $("#checkout-status-label").textContent = "订单无法加载";
+  $("#checkout-qr-section").hidden = true;
+  $("#checkout-message").textContent = message;
+  $("#checkout-countdown").textContent = "--:--";
+  stopCheckoutPolling();
+}
+
+function stopCheckoutPolling() {
+  if (state.checkoutPoll) window.clearInterval(state.checkoutPoll);
+  if (state.checkoutTimer) window.clearInterval(state.checkoutTimer);
+  state.checkoutPoll = null;
+  state.checkoutTimer = null;
 }
 
 async function api(path, options = {}) {
