@@ -1,0 +1,7 @@
+.env
+easypay-plus.exe
+easypay-plus
+easypay-plus-linux-*
+server.exe
+coverage.out
+*.log

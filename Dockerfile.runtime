@@ -1,0 +1,6 @@
+FROM alpine:3.22
+RUN addgroup -S app && adduser -S -G app app && apk add --no-cache ca-certificates tzdata
+USER app
+COPY --chmod=755 easypay-plus-linux-amd64 /usr/local/bin/easypay-plus
+EXPOSE 8080
+ENTRYPOINT ["easypay-plus"]

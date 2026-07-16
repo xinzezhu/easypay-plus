@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="app-base" content="__BASE_PATH__">
+  <title>EasyPay Plus</title>
+  <link rel="stylesheet" href="__BASE_PATH__/styles.css">
+</head>
+<body>
+  <div id="admin-app" class="app-shell" hidden>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">EP</div>
+        <div>
+          <strong>EasyPay Plus</strong>
+          <span>支付中转服务</span>
+        </div>
+      </div>
+
+      <nav class="primary-nav" aria-label="主导航">
+        <button class="nav-item is-active" type="button" data-view="products">
+          <i data-lucide="boxes"></i><span>产品管理</span>
+        </button>
+        <button class="nav-item" type="button" data-view="orders">
+          <i data-lucide="receipt-text"></i><span>支付订单</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="service-state"><span id="service-dot" class="state-dot"></span><span id="service-label">正在连接</span></div>
+        <button id="logout-button" class="quiet-button" type="button"><i data-lucide="log-out"></i><span>退出管理</span></button>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">控制台</p>
+          <h1 id="page-title">产品管理</h1>
+        </div>
+        <div class="topbar-actions">
+          <span id="mode-badge" class="mode-badge">模拟通道</span>
+          <button id="refresh-button" class="icon-button" type="button" title="刷新数据"><i data-lucide="refresh-cw"></i></button>
+          <button id="add-product-button" class="primary-button" type="button"><i data-lucide="plus"></i><span>添加产品</span></button>
+        </div>
+      </header>
+
+      <section class="metric-strip" aria-label="运行概览">
+        <div><span>启用产品</span><strong id="metric-products">0</strong></div>
+        <div><span>全部订单</span><strong id="metric-orders">0</strong></div>
+        <div><span>支付成功</span><strong id="metric-paid">0</strong></div>
+        <div><span>待处理</span><strong id="metric-pending">0</strong></div>
+        <div><span>实付总额</span><strong id="metric-amount">¥0.00</strong></div>
+        <div class="metric-alert"><span>通知失败</span><strong id="metric-failed">0</strong></div>
+      </section>
+
+      <section id="products-view" class="content-view">
+        <div class="section-heading">
+          <div><h2>接入产品</h2><p>每个产品使用独立凭据与通知密钥</p></div>
+          <span id="product-count" class="count-label">0 个产品</span>
+        </div>
+        <div class="table-shell">
+          <table>
+            <thead><tr><th>产品</th><th>App ID</th><th>异步通知地址</th><th>状态</th><th>创建时间</th><th class="align-right">操作</th></tr></thead>
+            <tbody id="products-body"></tbody>
+          </table>
+          <div id="products-empty" class="empty-state" hidden>
+            <i data-lucide="package-open"></i><strong>暂无接入产品</strong><span>添加第一个产品后即可创建支付订单</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="orders-view" class="content-view" hidden>
+        <div class="section-heading orders-heading">
+          <div><h2>订单流水</h2><p>易支付订单、产品订单与通知状态</p></div>
+          <div class="filter-bar">
+            <select id="product-filter" aria-label="筛选产品"><option value="">全部产品</option></select>
+            <select id="status-filter" aria-label="筛选订单状态">
+              <option value="">全部状态</option><option value="pending">待支付</option><option value="paid">已支付</option>
+              <option value="failed">创建失败</option><option value="expired">已过期</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-shell">
+          <table>
+            <thead><tr><th>订单</th><th>产品</th><th>支付方式</th><th>金额</th><th>订单状态</th><th>产品通知</th><th>创建时间</th><th class="align-right">操作</th></tr></thead>
+            <tbody id="orders-body"></tbody>
+          </table>
+          <div id="orders-empty" class="empty-state" hidden>
+            <i data-lucide="receipt"></i><strong>没有符合条件的订单</strong><span>订单创建后会显示在这里</span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <section id="login-screen" class="login-screen" hidden>
+    <div class="login-brand"><div class="brand-mark">EP</div><strong>EasyPay Plus</strong></div>
+    <form id="login-form" class="login-panel">
+      <p class="eyebrow">管理员验证</p>
+      <h1>进入支付控制台</h1>
+      <label for="admin-token">管理令牌</label>
+      <div class="input-with-icon"><i data-lucide="key-round"></i><input id="admin-token" name="token" type="password" autocomplete="current-password" required autofocus></div>
+      <p id="login-error" class="form-error" hidden></p>
+      <button class="primary-button full-button" type="submit"><span>验证并进入</span><i data-lucide="arrow-right"></i></button>
+    </form>
+  </section>
+
+  <section id="mock-screen" class="mock-screen" hidden>
+    <header class="mock-header"><div class="brand"><div class="brand-mark">EP</div><div><strong>EasyPay Plus</strong><span>模拟支付通道</span></div></div><span class="mode-badge">测试环境</span></header>
+    <main class="checkout">
+      <div class="checkout-panel">
+        <div class="checkout-status"><span class="state-dot"></span><span id="mock-status-label">等待支付</span></div>
+        <p class="eyebrow">订单金额</p>
+        <div id="mock-amount" class="checkout-amount">¥0.00</div>
+        <div class="checkout-details">
+          <div><span>商品</span><strong id="mock-goods">-</strong></div>
+          <div><span>产品</span><strong id="mock-product">-</strong></div>
+          <div><span>产品订单号</span><strong id="mock-order-no">-</strong></div>
+          <div><span>支付方式</span><strong id="mock-pay-type">-</strong></div>
+        </div>
+        <button id="mock-pay-button" class="primary-button full-button pay-button" type="button"><i data-lucide="badge-check"></i><span>确认模拟支付</span></button>
+        <a id="mock-back-link" class="back-link" href="__BASE_PATH__/"><i data-lucide="arrow-left"></i><span>返回管理台</span></a>
+      </div>
+    </main>
+  </section>
+
+  <dialog id="product-dialog" class="dialog">
+    <form id="product-form" method="dialog">
+      <div class="dialog-header"><div><p class="eyebrow">新接入</p><h2>添加产品</h2></div><button class="icon-button close-dialog" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+      <div class="form-grid">
+        <label>产品名称<input name="name" maxlength="100" required placeholder="例如：会员中心"></label>
+        <label>产品代码<input name="code" maxlength="32" pattern="[a-z][a-z0-9_-]+" required placeholder="member_center"></label>
+        <label class="span-2">异步通知地址<input name="notifyUrl" type="url" maxlength="500" required placeholder="https://product.example.com/payment/notify"></label>
+        <label class="span-2">支付完成返回地址 <span class="optional">选填</span><input name="returnUrl" type="url" maxlength="500" placeholder="https://product.example.com/payment/result"></label>
+      </div>
+      <p id="product-form-error" class="form-error" hidden></p>
+      <div class="dialog-actions"><button class="secondary-button close-dialog" type="button">取消</button><button class="primary-button" type="submit"><i data-lucide="plus"></i><span>创建产品</span></button></div>
+    </form>
+  </dialog>
+
+  <dialog id="credentials-dialog" class="dialog credentials-dialog">
+    <div class="dialog-header"><div><p class="eyebrow">创建成功</p><h2>产品接入凭据</h2></div><button class="icon-button close-credentials" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+    <div class="credential-warning"><i data-lucide="shield-alert"></i><span>密钥仅显示一次，关闭前请妥善保存。</span></div>
+    <div id="credential-fields" class="credential-fields"></div>
+    <div class="dialog-actions"><button class="primary-button close-credentials" type="button"><span>我已保存</span><i data-lucide="check"></i></button></div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" integrity="sha384-uTYyvsSSUZeaPhb5RbKlQa0zY/WpX/QHfvg2mczXyBQOpkWPEDy9lczyp+w7SKXu" crossorigin="anonymous"></script>
+  <script src="__BASE_PATH__/app.js" defer></script>
+</body>
+</html>

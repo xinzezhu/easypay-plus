@@ -1,0 +1,44 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-root-password}
+      MYSQL_DATABASE: easypay_plus
+      MYSQL_USER: easypay
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-db-password}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-change-root-password}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  app:
+    build: .
+    ports:
+      - "${APP_BIND_IP:-127.0.0.1}:${APP_PORT:-8080}:8080"
+    environment:
+      APP_ENV: production
+      HTTP_ADDR: :8080
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL}
+      BASE_PATH: ${BASE_PATH:-}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN}
+      APP_MASTER_KEY: ${APP_MASTER_KEY:?set APP_MASTER_KEY}
+      DB_DRIVER: mysql
+      MYSQL_DSN: easypay:${MYSQL_PASSWORD:-change-db-password}@tcp(mysql:3306)/easypay_plus?parseTime=true&charset=utf8mb4&loc=Local&multiStatements=true
+      AUTO_MIGRATE: "true"
+      EPAY_MOCK: ${EPAY_MOCK:-true}
+      EPAY_BASE_URL: ${EPAY_BASE_URL:-https://epay.jylt.cc}
+      EPAY_MCH_ID: ${EPAY_MCH_ID:-}
+      EPAY_SECRET: ${EPAY_SECRET:-}
+      EPAY_CALLBACK_SIGN_MODE: ${EPAY_CALLBACK_SIGN_MODE:-auto}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
